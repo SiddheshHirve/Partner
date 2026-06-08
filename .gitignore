@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large installer/setup executables
+*.exe
+OllamaSetup.exe
+
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Data and SQLite
+data/
+*.sqlite3
+*.db
+
+# Logs and temporary files
+*.log
+scratch/
+temp/
+tmp/
+.idea/
+.vscode/
