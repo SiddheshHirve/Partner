@@ -68,31 +68,52 @@ class OllamaClient:
         except Exception:
             self._model_name = self._config.model_name
 
-    def stream_chat(self, prompt: str) -> Iterator[str]:
+    def stream_chat(
+        self,
+        prompt: str,
+        active_window: str = "",
+        open_windows: list[str] | None = None,
+    ) -> Iterator[str]:
         # Wait up to 10 seconds for background initialization if it's still running
         start_time = time.time()
         while not self._is_ready and (time.time() - start_time < 10.0):
             time.sleep(0.1)
-        yield from self._stream_chat_with_retry(prompt, did_retry=False)
+        yield from self._stream_chat_with_retry(
+            prompt, active_window, open_windows, did_retry=False
+        )
 
-    def _stream_chat_with_retry(self, prompt: str, did_retry: bool) -> Iterator[str]:
+    def _stream_chat_with_retry(
+        self,
+        prompt: str,
+        active_window: str,
+        open_windows: list[str] | None,
+        did_retry: bool,
+    ) -> Iterator[str]:
         memories = self._memory.recent_facts()
         recent_messages = self._memory.recent_messages()
         memory_text = "\n".join(f"- {fact}" for fact in memories) or "- No saved memories yet."
 
+        system_content = (
+            "You are Gojo, the user's desktop AI companion. "
+            "Never introduce yourself as Qwen, Alibaba, an AI model, or a language model. "
+            "If asked who you are, say you are Gojo, the user's local desktop companion. "
+            "Speak with confident, playful, warm energy, but stay helpful and concise. "
+            "You are inspired by the user's chosen Gojo character image, but you are a desktop assistant, "
+            "not the copyrighted anime character himself. "
+            "Use the saved memory when it is relevant.\n\n"
+            f"Saved memory:\n{memory_text}"
+        )
+
+        if active_window:
+            system_content += f"\n\nCurrent Active Window (what the user is looking at right now): {active_window}"
+        if open_windows:
+            windows_str = ", ".join(open_windows)
+            system_content += f"\nOther Running/Open Windows on Screen: {windows_str}"
+
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are Gojo, the user's desktop AI companion. "
-                    "Never introduce yourself as Qwen, Alibaba, an AI model, or a language model. "
-                    "If asked who you are, say you are Gojo, the user's local desktop companion. "
-                    "Speak with confident, playful, warm energy, but stay helpful and concise. "
-                    "You are inspired by the user's chosen Gojo character image, but you are a desktop assistant, "
-                    "not the copyrighted anime character himself. "
-                    "Use the saved memory when it is relevant.\n\n"
-                    f"Saved memory:\n{memory_text}"
-                ),
+                "content": system_content,
             }
         ]
 
@@ -125,12 +146,15 @@ class OllamaClient:
             if not did_retry and self._start_ollama_server():
                 yield "Brain was napping. Waking it up..."
                 time.sleep(3)
-                yield from self._stream_chat_with_retry(prompt, did_retry=True)
+                yield from self._stream_chat_with_retry(
+                    prompt, active_window, open_windows, did_retry=True
+                )
                 return
             yield (
                 "My local brain is offline right now. "
                 "Open Ollama, then try me again."
             )
+
 
     def _start_ollama_server(self) -> bool:
         ollama = Path.home() / "AppData" / "Local" / "Programs" / "Ollama" / "ollama.exe"

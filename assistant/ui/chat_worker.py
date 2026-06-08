@@ -12,20 +12,31 @@ class ChatSignals(QObject):
 
 
 class ChatWorker(QRunnable):
-    def __init__(self, client: OllamaClient, prompt: str) -> None:
+    def __init__(
+        self,
+        client: OllamaClient,
+        prompt: str,
+        active_window: str = "",
+        open_windows: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self.signals = ChatSignals()
         self._client = client
         self._prompt = prompt
+        self._active_window = active_window
+        self._open_windows = open_windows or []
         self._reply = ""
 
     @Slot()
     def run(self) -> None:
         try:
-            for token in self._client.stream_chat(self._prompt):
+            for token in self._client.stream_chat(
+                self._prompt, self._active_window, self._open_windows
+            ):
                 self._reply += token
                 self.signals.token.emit(token)
             self.signals.finished.emit(self._reply)
         except Exception as exc:  # Defensive boundary for the UI thread.
             self.signals.failed.emit(str(exc))
             self.signals.finished.emit(self._reply)
+

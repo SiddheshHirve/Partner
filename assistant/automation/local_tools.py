@@ -19,6 +19,8 @@ class ToolResult:
     reminder_id: int | None = None
     reminder_due_at: datetime | None = None
     reminder_text: str | None = None
+    animation_state: str | None = None
+    animation_action: str | None = None
 
 
 class LocalToolRouter:
@@ -35,6 +37,10 @@ class LocalToolRouter:
     def handle(self, text: str) -> ToolResult:
         cleaned = text.strip()
         lowered = cleaned.lower()
+
+        anim_result = self._try_animation(cleaned)
+        if anim_result.handled:
+            return anim_result
 
         if lowered in {"what do you remember", "what do you remember?", "show memory", "show memories"}:
             return self._show_memories()
@@ -643,7 +649,9 @@ class LocalToolRouter:
             "whats all tabs open", "what tabs are open", "whats on my window", "what's on my window",
             "what window is active", "whats active window", "active window", "current window",
             "what window am i on", "what app am i on", "what app is open", "what's on my window now",
-            "whats on my window now", "what is on my window now"
+            "whats on my window now", "what is on my window now",
+            "what all tabs are running", "what tabs are running", "what apps are running",
+            "what apps are open", "what is open", "what is running", "what's running", "whats running"
         }
 
         if any(trigger in lowered for trigger in triggers):
@@ -708,9 +716,6 @@ class LocalToolRouter:
             if not IsWindowVisible(hwnd):
                 return True
                 
-            if ctypes.windll.user32.IsIconic(hwnd):
-                return True
-                
             length = GetWindowTextLength(hwnd)
 
             if length <= 0:
@@ -729,7 +734,8 @@ class LocalToolRouter:
             } or any(sys_win in title_lower for sys_win in [
                 "nvidia", "amd", "intel", "realtek", "driver", "system overlay", 
                 "microsoft text input", "ime", "notification", "start_companion.bat",
-                "assistant.main", "powershell", "cmd.exe", "conhost", "terminal", "wt.exe"
+                "assistant.main", "powershell", "cmd.exe", "conhost", "terminal", "wt.exe",
+                "python", "py.exe"
             ]):
                 return True
                 
@@ -739,9 +745,17 @@ class LocalToolRouter:
             if ex_style & WS_EX_TOOLWINDOW:
                 return True
                 
-            parent = ctypes.windll.user32.GetParent(hwnd)
-            if parent:
+            GWL_STYLE = -16
+            WS_CHILD = 0x40000000
+            style = GetWindowLong(hwnd, GWL_STYLE)
+            if style & WS_CHILD:
                 return True
+                
+            parent = ctypes.windll.user32.GetParent(hwnd)
+            if parent and IsWindowVisible(parent):
+                parent_len = GetWindowTextLength(parent)
+                if parent_len > 0:
+                    return True
                 
             titles.append(title)
             return True
@@ -1313,3 +1327,41 @@ class LocalToolRouter:
             if candidate.exists():
                 return candidate
         return "code"
+
+    def _try_animation(self, text: str) -> ToolResult:
+        lowered = text.lower().strip("?.! ")
+        
+        dance_triggers = {"dance", "do a dance", "can you dance", "show me some moves", "dance for me"}
+        if lowered in dance_triggers:
+            return ToolResult(True, "Check out my moves!", animation_action="dance")
+            
+        walk_triggers = {"walk", "walk around", "take a walk", "stretch your legs", "move around"}
+        if lowered in walk_triggers:
+            return ToolResult(True, "Sure, I'll stretch my legs a bit.", animation_action="walk")
+            
+        sleep_triggers = {"sleep", "go to sleep", "take a nap", "sleep gojo"}
+        if lowered in sleep_triggers:
+            return ToolResult(True, "Alright, turning off for a bit. Zzz...", animation_action="sleep")
+            
+        wake_triggers = {"wake up", "wake", "wake up gojo"}
+        if lowered in wake_triggers:
+            return ToolResult(True, "Huh? What? I'm awake!", animation_action="wake_up")
+            
+        happy_triggers = {"be happy", "happy", "smile", "laugh"}
+        if lowered in happy_triggers:
+            return ToolResult(True, "Heh, you make me happy!", animation_state="happy")
+            
+        sad_triggers = {"be sad", "sad", "cry"}
+        if lowered in sad_triggers:
+            return ToolResult(True, "Aww... that's sad.", animation_state="sad")
+
+        domain_triggers = {"domain", "domain expansion", "infinite void", "crossed fingers", "jjk pose", "pose"}
+        if lowered in domain_triggers:
+            return ToolResult(True, "Domain Expansion: Infinite Void!", animation_action="domain")
+
+        pervert_triggers = {"pervert", "pervert move", "kiss", "blow kiss", "tease"}
+        if lowered in pervert_triggers:
+            return ToolResult(True, "Mwah~ ❤️", animation_action="pervert")
+            
+        return ToolResult(False, "")
+
