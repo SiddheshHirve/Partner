@@ -4,7 +4,7 @@ import math
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QSize, QThreadPool, QTimer, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, QThreadPool, QTimer, Qt, QThread, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -17,6 +17,7 @@ from PySide6.QtGui import (
     QLinearGradient,
     QRadialGradient,
 )
+from PySide6.QtTextToSpeech import QTextToSpeech
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -528,6 +529,70 @@ class DomainOverlay(QWidget):
         painter.restore()
 
 
+class VoiceListenerWorker(QThread):
+    text_recognized = Signal(str)
+    status_changed = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._running = True
+        import speech_recognition as sr
+        self.recognizer = sr.Recognizer()
+        self.recognizer.dynamic_energy_threshold = True
+        self.recognizer.pause_threshold = 0.8
+
+    def stop(self) -> None:
+        self._running = False
+        self.wait()
+
+    def run(self) -> None:
+        import speech_recognition as sr
+        self.status_changed.emit("Initializing mic...")
+        try:
+            mic = sr.Microphone()
+        except Exception as e:
+            self.status_changed.emit("Mic Error")
+            return
+
+        with mic as source:
+            self.status_changed.emit("Calibrating...")
+            try:
+                self.recognizer.adjust_for_ambient_noise(source, duration=1.0)
+            except Exception:
+                pass
+            
+            while self._running:
+                self.status_changed.emit("Listening...")
+                try:
+                    audio = self.recognizer.listen(source, timeout=3.0, phrase_time_limit=10.0)
+                except sr.WaitTimeoutError:
+                    continue
+                except Exception:
+                    if not self._running:
+                        break
+                    self.status_changed.emit("Mic error...")
+                    self.msleep(1000)
+                    continue
+
+                if not self._running:
+                    break
+
+                self.status_changed.emit("Recognizing...")
+                try:
+                    text = self.recognizer.recognize_google(audio)
+                    if text.strip():
+                        self.text_recognized.emit(text)
+                except sr.UnknownValueError:
+                    self.status_changed.emit("Unrecognized")
+                    self.msleep(500)
+                except sr.RequestError:
+                    self.status_changed.emit("Connection error")
+                    self.msleep(1000)
+                except Exception:
+                    self.status_changed.emit("Speech error")
+                    self.msleep(1000)
+
+
 class CompanionWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -589,6 +654,14 @@ class CompanionWindow(QWidget):
         self._input.setPlaceholderText("Talk to him...")
         self._input.returnPressed.connect(self._send_message)
 
+        # Voice Mode mic button
+        self._mic_btn = QPushButton("🎤")
+        self._mic_btn.setCheckable(True)
+        self._mic_btn.setObjectName("mic_btn")
+        self._mic_btn.setToolTip("Toggle Voice Command Mode")
+        self._mic_btn.setFixedSize(36, 36)
+        self._mic_btn.clicked.connect(self._toggle_voice_mode)
+
         self._send = QPushButton("Send")
         self._send.clicked.connect(self._send_message)
 
@@ -596,6 +669,20 @@ class CompanionWindow(QWidget):
         self._hide.setToolTip("Hide")
         self._hide.setFixedSize(24, 24)
         self._hide.clicked.connect(self.hide)
+
+        # Initialize Text-to-Speech
+        try:
+            self._tts = QTextToSpeech(self)
+            voices = self._tts.availableVoices()
+            for voice in voices:
+                if "heera" in voice.name().lower() or "ravi" in voice.name().lower():
+                    self._tts.setVoice(voice)
+                    break
+        except Exception as e:
+            print(f"Error initializing TTS: {e}")
+            self._tts = None
+
+        self._voice_worker = None
 
         self._build_layout()
         self._build_tray()
@@ -611,6 +698,7 @@ class CompanionWindow(QWidget):
         composer = QHBoxLayout()
         composer.setSpacing(8)
         composer.addWidget(self._input, 1)
+        composer.addWidget(self._mic_btn)
         composer.addWidget(self._send)
 
         root = QVBoxLayout(self)
@@ -674,6 +762,17 @@ class CompanionWindow(QWidget):
             QPushButton#gravity_btn:unchecked, QPushButton#gravity_btn:!checked {
                 background: rgba(100, 110, 120, 140);
                 color: #d1d5db;
+            }
+
+            QPushButton#mic_btn {
+                background: rgba(47, 126, 247, 180);
+                border-radius: 8px;
+                padding: 4px;
+                font-size: 14px;
+            }
+            QPushButton#mic_btn:checked {
+                background: #ef4444;
+                border: 1px solid rgba(255, 255, 255, 120);
             }
             """
         )
@@ -753,6 +852,11 @@ class CompanionWindow(QWidget):
         self._avatar.set_state("idle")
         self._reset_timer.start(7000)
 
+        # Speak response out loud if TTS is available
+        if hasattr(self, "_tts") and self._tts and reply.strip():
+            self._tts.stop()
+            self._tts.say(self._clean_text_for_speech(reply))
+
     def _reset_bubble(self) -> None:
         if not self._active_workers:
             self._reply_text = ""
@@ -812,6 +916,11 @@ class CompanionWindow(QWidget):
         self._send.setDisabled(False)
         self._avatar.set_state("idle")
         self._reset_timer.start(7000)
+
+        # Speak response out loud if TTS is available
+        if hasattr(self, "_tts") and self._tts and message.strip():
+            self._tts.stop()
+            self._tts.say(self._clean_text_for_speech(message))
 
     def _schedule_pending_reminders(self) -> None:
         for reminder_id, text, due_at in self._memory.pending_reminders():
@@ -909,10 +1018,17 @@ class CompanionWindow(QWidget):
         pervert_action = QAction("Tease / Blow Kiss 😘", self)
         pervert_action.triggered.connect(self.start_pervert)
 
+        voice_action = QAction("Voice Mode 🎤", self)
+        voice_action.setCheckable(True)
+        is_voice_active = hasattr(self, "_voice_worker") and self._voice_worker is not None
+        voice_action.setChecked(is_voice_active)
+        voice_action.triggered.connect(self._toggle_voice_mode)
+
         menu.addAction(walk_action)
         menu.addAction(dance_action)
         menu.addAction(domain_action)
         menu.addAction(pervert_action)
+        menu.addAction(voice_action)
         
         if self._avatar._state == "sleeping":
             menu.addAction(wake_action)
@@ -1102,3 +1218,46 @@ class CompanionWindow(QWidget):
         self._avatar.set_state("pervert")
         self._bubble.setText("Mwah~ ❤️")
         QTimer.singleShot(4000, lambda: self._avatar.set_state("idle") if self._avatar._state == "pervert" else None)
+
+    def _toggle_voice_mode(self, checked: bool) -> None:
+        if checked:
+            self._start_voice_listener()
+        else:
+            self._stop_voice_listener()
+
+    def _start_voice_listener(self) -> None:
+        self._mic_btn.setChecked(True)
+        self._mic_btn.setText("🎤...")
+        self._voice_worker = VoiceListenerWorker()
+        self._voice_worker.text_recognized.connect(self._on_voice_input)
+        self._voice_worker.status_changed.connect(self._on_voice_status)
+        self._voice_worker.start()
+
+    def _stop_voice_listener(self) -> None:
+        self._mic_btn.setChecked(False)
+        self._mic_btn.setText("🎤")
+        self._input.setPlaceholderText("Talk to him...")
+        if hasattr(self, "_voice_worker") and self._voice_worker:
+            self._voice_worker.stop()
+            self._voice_worker = None
+
+    def _on_voice_input(self, text: str) -> None:
+        self._input.setText(text)
+        self._send_message()
+
+    def _on_voice_status(self, status: str) -> None:
+        self._input.setPlaceholderText(f"Voice Mode: {status}")
+
+    def _clean_text_for_speech(self, text: str) -> str:
+        import re
+        # Remove asterisks and underscores
+        text = text.replace("*", "").replace("_", "")
+        # Remove code blocks
+        text = re.sub(r"```.*?```", "[code block]", text, flags=re.DOTALL)
+        return text
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._stop_voice_listener()
+        if hasattr(self, "_tts") and self._tts:
+            self._tts.stop()
+        super().closeEvent(event)
